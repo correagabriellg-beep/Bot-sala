@@ -1,0 +1,141 @@
+import discord
+from discord.ext import commands
+import qrcode
+from io import BytesIO
+import os
+from openai import OpenAI
+
+# ==================== CONFIGURAÇÕES ====================
+TOKEN = "COLE_SEU_TOKEN_AQUI"
+OPENAI_API_KEY = "COLE_SUA_CHAVE_OPENAI_OU_GROK_AQUI"
+
+# Cargo que pode usar os comandos de admin
+CARGO_ADMIN = "Admin"
+
+# Chave Pix (pode ser e-mail, CPF, telefone ou chave aleatória)
+CHAVE_PIX = "(91) 98734-5484"
+NOME_RECEBEDOR = "DAVI PALHETA CORREA"
+CIDADE = "Ananindeua"
+
+# =======================================================
+
+intents = discord.Intents.default()
+intents.message_content = True
+intents.guilds = True
+intents.members = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+client_ai = OpenAI(api_key=OPENAI_API_KEY)
+
+# ---------- Função da IA ----------
+async def perguntar_ia(texto):
+    response = client_ai.chat.completions.create(
+        model="gpt-4o-mini",  # ou "grok-beta" se usar xAI
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Você é um assistente de servidor Discord. "
+                    "Sempre responda em português. "
+                    "Quando o usuário pedir para criar uma sala ou canal, "
+                    "responda EXATAMENTE neste formato:\n"
+                    "CRIAR_CANAL|nome_do_canal|tipo\n"
+                    "Onde tipo pode ser: texto ou voz\n"
+                    "Exemplo: CRIAR_CANAL|VIP|voz"
+                )
+            },
+            {"role": "user", "content": texto}
+        ]
+    )
+    return response.choices[0].message.content.strip()
+
+# ---------- Comando de IA ----------
+@bot.command(name="ia")
+async def ia(ctx, *, texto: str):
+    if not any(r.name == CARGO_ADMIN for r in ctx.author.roles):
+        return await ctx.send("❌ Você não tem permissão.")
+
+    msg = await ctx.send("🤖 Pensando...")
+
+    try:
+        resposta = await perguntar_ia(texto)
+
+        if resposta.startswith("CRIAR_CANAL|"):
+            partes = resposta.split("|")
+            if len(partes) >= 3:
+                nome = partes[1].strip()
+                tipo = partes[2].strip().lower()
+
+                if tipo == "voz":
+                    canal = await ctx.guild.create_voice_channel(nome)
+                else:
+                    canal = await ctx.guild.create_text_channel(nome)
+
+                await msg.edit(content=f"✅ Canal criado: {canal.mention}")
+            else:
+                await msg.edit(content=resposta)
+        else:
+            await msg.edit(content=resposta)
+
+    except Exception as e:
+        await msg.edit(content=f"❌ Erro: {e}")
+
+# ---------- Comando rápido de criar sala ----------
+@bot.command(name="sala")
+async def sala(ctx, tipo: str, *, nome: str):
+    if not any(r.name == CARGO_ADMIN for r in ctx.author.roles):
+        return await ctx.send("❌ Você não tem permissão.")
+
+    tipo = tipo.lower()
+    if tipo not in ["texto", "voz"]:
+        return await ctx.send("Use: `!sala texto Nome` ou `!sala voz Nome`")
+
+    if tipo == "voz":
+        canal = await ctx.guild.create_voice_channel(nome)
+    else:
+        canal = await ctx.guild.create_text_channel(nome)
+
+    await ctx.send(f"✅ Sala criada: {canal.mention}")
+
+# ---------- Gerar QR Code Pix ----------
+@bot.command(name="pix")
+async def pix(ctx, valor: float, *, descricao="Pagamento"):
+    # Payload Pix simplificado (funciona bem na maioria dos apps)
+    payload = (
+        f"00020126580014BR.GOV.BCB.PIX0136{CHAVE_PIX}"
+        f"52040000530398654{valor:.2f}5802BR"
+        f"5913{NOME_RECEBEDOR[:13]}6009{CIDADE[:9]}"
+        f"62070503***6304"
+    )
+
+    qr = qrcode.QRCode(version=1, box_size=10, border=4)
+    qr.add_data(payload)
+    qr.make(fit=True)
+
+    img = qr.make_image(fill_color="black", back_color="white")
+    buffer = BytesIO()
+    img.save(buffer, format="PNG")
+    buffer.seek(0)
+
+    file = discord.File(fp=buffer, filename="pix.png")
+
+    embed = discord.Embed(
+        title="💰 Pagamento Pix",
+        description=(
+            f"**Valor:** R$ {valor:.2f}\n"
+            f"**Descrição:** {descricao}\n\n"
+            f"Escaneie o QR Code abaixo:"
+        ),
+        color=0x00C853
+    )
+    embed.set_footer(text="Pagamento via Pix")
+
+    await ctx.send(embed=embed, file=file)
+
+# ---------- Evento de pronto ----------
+@bot.event
+async def on_ready():
+    print(f"✅ Bot online como {bot.user}")
+    await bot.change_presence(activity=discord.Game(name="!ia | !sala | !pix"))
+
+bot.run()
